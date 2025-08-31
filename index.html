@@ -1,0 +1,262 @@
+﻿<!doctype html>
+
+
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Idle Loop — Interactive Log</title>
+  <style>
+    :root {
+      --bg: #0b0c0f;
+      --fg: #d6e0da;
+      --muted: #8aa39b;
+      --green: #5bd18d;
+      --amber: #ffc168;
+      --red: #ff6b6b;
+      --link: #7ad3ff;
+      --panel: #0f1115;
+      --shadow: 0 8px 30px rgba(0,0,0,.45);
+    }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 800px at 80% -10%, #11131a 0%, var(--bg) 60%);
+      color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      line-height: 1.45;
+    }
+    .wrap {
+      max-width: 940px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    header {
+      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    header h1 { font-size: 18px; letter-spacing: .4px; margin: 0; color: var(--fg); }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--panel); border: 1px solid #1b1e26; padding: 6px 10px; border-radius: 10px;
+      color: var(--muted); font-size: 12px; box-shadow: var(--shadow);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 10px currentColor; }
+    .status-stable .dot { background: var(--green); }
+    .status-warning .dot { background: var(--amber); }
+    .status-critical .dot { background: var(--red); }main {
+  background: #0e1015; border: 1px solid #1a1d25; border-radius: 14px; padding: 18px 16px 12px;
+  box-shadow: var(--shadow);
+}
+#terminal {
+  min-height: 48vh;
+  white-space: pre-wrap;
+  caret-color: transparent; /* we render our own */
+  font-size: 14px;
+}
+.prompt { color: #8fd2ff; }
+blockquote { margin: 8px 0 8px 0; border-left: 3px solid #2a2e39; padding: 6px 10px; color: #cde7ff; background: #0c1018; }
+
+
+.cursor { display:inline-block; width:10px; }
+.cursor::after { content: "▌"; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+
+.controls {
+  display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; flex-wrap: wrap;
+}
+button, .btn {
+  background: #12151d; color: var(--fg); border: 1px solid #1f2330; padding: 10px 14px; border-radius: 10px;
+  font-family: inherit; font-size: 14px; letter-spacing: .2px; cursor: pointer; transition: transform .06s ease, background .2s;
+}
+button:hover { background: #151926; }
+button:active { transform: translateY(1px); }
+.meta { color: var(--muted); font-size: 12px; }
+a { color: var(--link); text-decoration: none; }
+
+
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>The Idle Loop</h1>
+      <div class="badges">
+        <div id="statusBadge" class="badge status-stable"><span class="dot"></span><span id="statusText">stable</span></div>
+        <div id="batteryBadge" class="badge"><span class="dot" style="background:transparent"></span><span id="batteryText">100%</span></div>
+        <div id="timeBadge" class="badge"><span class="dot" style="background:transparent"></span><span id="timeText">—</span></div>
+      </div>
+    </header>
+    <main>
+      <div id="terminal" aria-live="polite" aria-atomic="false"></div>
+      <div class="controls">
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button id="nextBtn" aria-label="Continue to next entry">Continue ▷</button>
+          <button id="replayBtn" aria-label="Replay this entry">Replay</button>
+          <label class="meta"><input type="checkbox" id="fastToggle"/> Fast mode</label>
+        </div>
+        <div class="meta">Press <strong>N</strong> to continue • <strong>R</strong> to replay • <strong>F</strong> toggles fast</div>
+      </div>
+    </main>
+    <p class="meta" style="margin-top:10px;">Content loads from <code>idle_loop.json</code>. Place this HTML beside that file on GitHub Pages.</p>
+  </div>  <script>
+  // Tiny renderer for The Idle Loop (no frameworks)
+  const term = document.getElementById('terminal');
+  const nextBtn = document.getElementById('nextBtn');
+  const replayBtn = document.getElementById('replayBtn');
+  const fastToggle = document.getElementById('fastToggle');
+  const statusBadge = document.getElementById('statusBadge');
+  const statusText = document.getElementById('statusText');
+  const batteryText = document.getElementById('batteryText');
+  const timeText = document.getElementById('timeText');
+
+
+  let data = null;
+  let idx = 0;
+  let typingDelay = 35; // default; will be overwritten by metadata
+  let printing = false;
+
+
+  fetch('idle_loop.json')
+    .then(r => r.json())
+    .then(json => { data = json; typingDelay = json?.metadata?.typing_delay ?? typingDelay; boot(); })
+    .catch(err => {
+      term.textContent = 'Failed to load idle_loop.json\n' + err;
+    });
+
+
+  function boot(){
+    writeLine(`// ${data.title}`)
+    writeLine(`// written by ${data.authors.written_by}  •  composed by ${data.authors.composed_by}`)
+    writeLine('');
+    render(idx);
+  }
+
+
+  function statusColor(cls){
+    statusBadge.classList.remove('status-stable','status-warning','status-critical');
+    statusBadge.classList.add('status-' + cls);
+  }
+
+
+  function setBadges(entry){
+    const s = (entry.system_status||'stable');
+    statusColor(s);
+    statusText.textContent = s;
+    if (typeof entry.battery === 'number') batteryText.textContent = entry.battery + '%';
+    timeText.textContent = entry.timestamp || '—';
+  }
+
+
+  function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+
+  function pauseForSilence(entry){
+    if(!entry.silence_duration) return Promise.resolve();
+    // Parse like "13d" or "365d" etc. Map to a short cinematic pause.
+    const m = String(entry.silence_duration).match(/(\d+)([a-zA-Z]+)/);
+    if(!m) return Promise.resolve();
+    const n = parseInt(m[1],10); const unit = m[2].toLowerCase();
+    let ms = 0;
+    if(unit.startsWith('d')) ms = Math.min(5000, 150 + n*40); // cap 5s
+    else if(unit.startsWith('y')) ms = Math.min(7000, 600 + n*600); // cap 7s
+    return sleep(ms);
+  }
+
+
+  async function render(i){
+    const e = data.entries[i];
+    if(!e) { writeLine('\n// End of log'); nextBtn.disabled = true; return; }
+    setBadges(e);
+    await pauseForSilence(e);
+
+
+    term.innerHTML = '';
+    await printEntry(e);
+  }
+
+
+  function writeFragment(html){
+    const span = document.createElement('span');
+    span.innerHTML = html;
+    term.appendChild(span);
+  }
+
+
+  function writeLine(text=''){
+    const div = document.createElement('div');
+    if(text.startsWith('>')){
+      const bq = document.createElement('blockquote');
+      bq.textContent = text.slice(1).trim();
+      term.appendChild(bq);
+    } else {
+      div.textContent = text;
+      term.appendChild(div);
+    }
+    term.scrollTop = term.scrollHeight;
+  }
+
+
+  async function typeText(text){
+    printing = true;
+    const div = document.createElement('div');
+    term.appendChild(div);
+    const span = document.createElement('span');
+    div.appendChild(span);
+    const cursor = document.createElement('span');
+    cursor.className = 'cursor';
+    if(!(data?.metadata?.cursor_blink ?? true)) cursor.style.display = 'none';
+    div.appendChild(cursor);
+
+
+    const delay = fastToggle.checked ? 5 : typingDelay;
+    for(let i=0;i<text.length;i++){
+      span.textContent += text[i];
+      term.scrollTop = term.scrollHeight;
+      // Avoid super long waits on huge blocks
+      await sleep(Math.min(60, delay));
+    }
+    cursor.remove();
+    printing = false;
+  }
+
+
+  async function printEntry(e){
+    if(e.content && e.content.length){
+      for(const line of e.content){
+        if(line.trim().length){ await typeText(line); }
+        else { writeLine(''); }
+      }
+    }
+    if(e.message){
+      // spacer
+      writeLine('');
+      await typeText('delivery: ' + e.message.delivery);
+      if(e.message.text){ writeLine(''); writeLine('> ' + e.message.text); }
+    }
+    if(e.internal_state){
+      writeLine('');
+      await typeText(e.internal_state);
+    }
+    if(e.final_state){
+      writeLine('');
+      await typeText(e.final_state);
+    }
+  }
+
+
+  async function replay(){ if(printing) return; await render(idx); }
+  async function next(){ if(printing) return; idx = Math.min(idx+1, data.entries.length); await render(idx); }
+
+
+  nextBtn.addEventListener('click', next);
+  replayBtn.addEventListener('click', replay);
+  document.addEventListener('keydown', (e)=>{
+    if(e.key.toLowerCase()==='n') next();
+    if(e.key.toLowerCase()==='r') replay();
+    if(e.key.toLowerCase()==='f') { fastToggle.checked = !fastToggle.checked; }
+  });
+  </script></body>
+</html>
