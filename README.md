@@ -67,5 +67,13 @@ And if you stop before the end, that’s alright too—The Idle Loop is patient.
 
 ---
 
+## Run on Local Python Server
+
+```
+git clone https://github.com/phoneticalfox/glowing-system
+cd glowing-system
+python -m http.server
+```
+
 delivery: ok
 // End of README
